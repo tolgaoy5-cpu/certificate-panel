@@ -23,7 +23,8 @@ async function loadLists() {
     const t = wb.worksheets.getItem("Certificate Types").getRange(`B${TYPE_FIRST}:B${TYPE_LAST}`).load("values");
     const c = wb.worksheets.getItem("Certificates").getRange(`B${FIRST}:D${CERT_LAST}`).load("values");
     await ctx.sync();
-    const units = u.values.map((r) => ({ building: String(r[0] || "").trim(), unit: String(r[1] || "").trim(), postcode: String(r[2] || ""), active: r[12] !== "No" }))
+    const units = u.values.map((r) => ({ building: String(r[0] || "").trim(), unit: String(r[1] || "").trim(), postcode: String(r[2] || ""),
+      type: String(r[3] || ""), active: r[12] !== "No" }))
       .filter((x) => x.building).map((x) => ({ ...x, name: displayName(x.building, x.unit) }));
     const types = t.values.map((r) => String(r[0] || "").trim()).filter(Boolean);
     const existing = new Set(c.values.filter((r) => r[0] && r[1] && r[2]).map((r) => `${r[0]}|${r[1]}|${Math.floor(Number(r[2]))}`));
@@ -36,6 +37,7 @@ async function writeCert(row) {
     const ws = ctx.workbook.worksheets.getItem("Certificates");
     const r = ws.getRange(`B${FIRST}:D${CERT_LAST}`).load("values");
     await ctx.sync();
+    if (r.values.some((v) => v[0] === row.property && v[1] === row.type && Math.floor(Number(v[2])) === serial(row.issue))) return 0; // already there
     const i = r.values.findIndex((v) => v.every((x) => x === "" || x === null));
     if (i < 0) throw new Error("The Certificates sheet is full (3,000 rows).");
     const n = FIRST + i;
@@ -67,23 +69,36 @@ const displayName = (b, u) => (u ? `${b} – ${u}` : b);
 const PC = /\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/i;
 function normPostcode(s) { const m = PC.exec(String(s || "").toUpperCase()); return m ? m[1] + m[2] : ""; }
 function norm(s) {
-  return String(s || "").toLowerCase().replace(/\broad\b/g, "rd").replace(/\bstreet\b/g, "st").replace(/\bavenue\b/g, "ave")
+  return String(s || "").toLowerCase().replace(/['’]/g, "").replace(/\broad\b/g, "rd").replace(/\bstreet\b/g, "st").replace(/\bavenue\b/g, "ave")
     .replace(/\bcourt\b/g, "ct").replace(/\bapartment\b|\bapt\b/g, "flat").replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean).join(" ");
 }
 const numbers = (s) => new Set(norm(s).match(/\b\d+[a-z]?\b/g) || []);
+const BUILDING_TYPES = new Set(["Fire risk assessment", "Fire alarm service", "Emergency lighting test", "Fire extinguisher service",
+  "Fire door checks (communal)", "Lift thorough examination (LOLER)", "Asbestos survey / re-inspection", "Dry riser test"]);
 function unitKey(s) {
   s = norm(s);
+  if ((s.match(/\b\d+[a-z]?\b/g) || []).length > 1) return "multi"; // "Rooms 2, 3, 4 and 5": never one flat
+  if (["flats", "all flats", "rooms", "all rooms", "building", "whole block"].includes(s)) return "common";
   if (!s || s === "whole" || s === "whole building" || s === "house") return "whole";
   if (/common|communal|landlords? supply|block/.test(s)) return "common";
   if (/shop|retail|commercial/.test(s)) return "shop";
   const m = /(?:flat|unit|room)\s*([0-9]+[a-z]?)/.exec(s) || /\b([0-9]+[a-z]?)\b/.exec(s);
   return m ? `no:${m[1]}` : s;
 }
-function match(units, address, unit, postcode) {
+function match(units, address, unit, postcode, ctype) {
   const pc = normPostcode(postcode) || normPostcode(address), nums = numbers(address);
-  const words = new Set(norm(address).split(" ").filter((w) => !nums.has(w))), uk = unitKey(unit);
-  const scored = units.filter((u) => u.active).map((u) => {
+  const words = new Set(norm(address).split(" ").filter((w) => !nums.has(w)));
+  const uk0 = unitKey(unit);
+  const active = units.filter((u) => u.active), per = {}, hasCommon = new Set();
+  active.forEach((u) => {
+    per[norm(u.building)] = (per[norm(u.building)] || 0) + 1;
+    if (unitKey(u.unit) === "common") hasCommon.add(norm(u.building));
+  });
+  const scored = active.map((u) => {
     let s = 0;
+    const onlyUnit = per[norm(u.building)] === 1; // one unit in the building: its name can be written many ways
+    // building-wide certificates belong to the common parts, where the building has them
+    const uk = BUILDING_TYPES.has(ctype) && (uk0 === "whole" || uk0 === "multi") && hasCommon.has(norm(u.building)) ? "common" : uk0;
     const upc = normPostcode(u.postcode);
     if (pc && upc) s += pc === upc ? 40 : pc.slice(0, -3) === upc.slice(0, -3) ? 15 : -30;
     const bn = numbers(u.building), base = (x) => x.replace(/[a-z]$/, "");
@@ -92,9 +107,13 @@ function match(units, address, unit, postcode) {
     const bw = norm(u.building).split(" ").filter((w) => w && !bn.has(w));
     if (bw.length) s += (20 * bw.filter((w) => words.has(w)).length) / bw.length;
     const pk = unitKey(u.unit);
-    if (pk === uk) s += 25;
+    if (uk === "multi") s -= 20;
+    else if (pk === uk) s += 25;
     else if (uk === "whole" && pk.startsWith("no:") && nums.has(pk.slice(3))) s += 25; // "610a Holloway Road" -> Flat 610a
-    else if (uk === "whole" && pk === "common") s += 5; else if (pk !== "whole" && uk !== "whole") s -= 20;
+    else if (uk === "whole" && pk === "common") s += 5;
+    else if (onlyUnit) s += 10;
+    else if (pk !== "whole" && uk !== "whole") s -= 20;
+    if (ctype === "HMO licence" && u.type === "HMO") s += 15;
     return [s, u];
   }).sort((a, b) => b[0] - a[0]);
   if (!scored.length) return { unit: null, score: 0, second: 0 };
@@ -208,6 +227,16 @@ function toBase64(blob) {
 }
 
 /* ------------------------------------------------------------ dates */
+/* An EPC is valid for exactly 10 years, so a missing issue date follows from "valid until". */
+function epcIssue(c) {
+  if (c.type !== "EPC" || c.issue_date || !/^\d{4}-\d{2}-\d{2}/.test(c.expiry_or_next_due || "")) return "";
+  const [y, m, d] = c.expiry_or_next_due.slice(0, 10).split("-").map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  let issue = new Date(Date.UTC(next.getUTCFullYear() - 10, next.getUTCMonth(), next.getUTCDate()));
+  if (issue.getUTCMonth() !== next.getUTCMonth()) issue = new Date(Date.UTC(next.getUTCFullYear() - 10, next.getUTCMonth(), next.getUTCDate() - 1)); // 29 Feb
+  c.issue_date = issue.toISOString().slice(0, 10);
+  return "Issue date worked out from the expiry (EPCs last 10 years)";
+}
 function serial(iso) {
   if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return "";
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
@@ -241,20 +270,22 @@ async function handle(file) {
     card.remove();
     for (const c of items) {
       const sub = newCard(`${file.name} · ${c.type_as_written || c.type}`);
-      const m = match(units, c.address, c.unit, c.postcode);
+      const inferred = epcIssue(c);
+      const m = match(units, c.address, c.unit, c.postcode, c.type);
       const reasons = [];
       if (!types.includes(c.type)) reasons.push("certificate type");
       if (!c.issue_date) reasons.push("issue date");
       if (!m.unit || m.score < AUTO_SCORE || m.score - m.second < AUTO_MARGIN) reasons.push("which property");
       if (c.confidence === "low") reasons.push("hard to read");
-      const item = { ...c, file: file.name, suggested: m.unit && m.score > 20 ? m.unit.name : "" };
+      const item = { ...c, file: file.name, inferred, suggested: m.unit && m.score > 20 ? m.unit.name : "" };
       if (!reasons.length && existing.has(`${m.unit.name}|${c.type}|${serial(c.issue_date)}`)) {
         finish(sub, "skipped", `Already in the tracker: ${m.unit.name} · ${c.type} · ${ukDate(c.issue_date)}`);
       } else if (reasons.length) {
         reviewForm(sub, item, units, types, "Please check: " + reasons.join(", ") + ".");
       } else {
-        await save(item, m.unit.name);
-        finish(sub, "saved", `Saved: ${m.unit.name} · ${c.type} · ${ukDate(c.issue_date)}${c.expiry_or_next_due ? " → " + ukDate(c.expiry_or_next_due) : ""}`);
+        const n = await save(item, m.unit.name);
+        if (!n) finish(sub, "skipped", `Already in the tracker: ${m.unit.name} · ${c.type} · ${ukDate(c.issue_date)}`);
+        else finish(sub, "saved", `Saved: ${m.unit.name} · ${c.type} · ${ukDate(c.issue_date)}${c.expiry_or_next_due ? " → " + ukDate(c.expiry_or_next_due) : ""}`);
       }
     }
   } catch (e) {
@@ -263,8 +294,8 @@ async function handle(file) {
 }
 
 async function save(c, propertyName) {
-  const notes = [c.engineer && `Engineer: ${c.engineer}`, c.remedial_work && `Remedial: ${c.remedial_work}`].filter(Boolean).join("; ");
-  await writeCert({ property: propertyName, type: c.type, issue: c.issue_date, expiry: c.expiry_or_next_due, result: c.result,
+  const notes = [c.inferred, c.engineer && `Engineer: ${c.engineer}`, c.remedial_work && `Remedial: ${c.remedial_work}`].filter(Boolean).join("; ");
+  return writeCert({ property: propertyName, type: c.type, issue: c.issue_date, expiry: c.expiry_or_next_due, result: c.result,
     company: c.company, number: c.certificate_number, file: c.file, notes });
 }
 
@@ -333,9 +364,9 @@ function reviewForm(card, c, units, types, why) {
       }
       const item = { ...c, type: q(".f-type").value, issue_date: q(".f-issue").value, expiry_or_next_due: q(".f-exp").value,
         result: q(".f-res").value, certificate_number: q(".f-no").value, company: q(".f-co").value };
-      await save(item, prop);
+      const n = await save(item, prop);
       stats.review--;
-      finish(card, "saved", `Saved: ${prop} · ${item.type} · ${ukDate(item.issue_date)}`);
+      finish(card, n ? "saved" : "skipped", `${n ? "Saved" : "Already in the tracker"}: ${prop} · ${item.type} · ${ukDate(item.issue_date)}`);
     } catch (e) {
       btn.disabled = false;
       alert(e.message || String(e));
