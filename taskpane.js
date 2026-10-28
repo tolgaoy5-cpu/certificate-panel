@@ -11,7 +11,7 @@ const PTYPES = ["Residential let", "HMO", "Block / common parts", "Commercial", 
 const FLAGS = [["gas", "Gas"], ["lift", "Lift"], ["aircon", "Air con >12kW"], ["over11m", "Over 11m"], ["pre2000", "Built pre-2000"], ["licence", "Council licence"]];
 const READABLE = /\.(pdf|jpe?g|png|webp|gif|heic|heif)$/i;
 const KEY = "gc-cert-reader-key";
-const ARCHIVE = "http://127.0.0.1:8765";  // Certificate Inbox service on this Mac: keeps a copy of every certificate
+const ARCHIVE = "https://127.0.0.1:8765";  // Certificate Inbox service on this Mac: keeps a copy of every certificate
 
 const $ = (id) => document.getElementById(id);
 let busy = 0, queue = [], stats = { saved: 0, review: 0, skipped: 0, error: 0 }, archiveOn = false;
