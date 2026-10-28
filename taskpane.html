@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Certificate Reader</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js" defer></script>
+<style>
+:root{--ink:#13261F;--muted:#5B7067;--green:#134636;--gold:#B8892E;--bg:#FAF6EE;--line:#E4DCCB;--red:#C94F5C;--amber:#C77A12;--ok:#E3F4EC;--warn:#FFF1DD;--bad:#FBE7E9}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",-apple-system,"Helvetica Neue",Arial,sans-serif;font-size:13px;color:var(--ink);background:var(--bg)}
+header{background:var(--green);color:#F5E9CF;padding:12px 14px}
+header b{display:block;font-size:15px}
+header span{font-size:11px;opacity:.8}
+main{padding:12px}
+#drop{margin-top:10px;border:2px dashed var(--green);border-radius:12px;background:#fff;padding:22px 12px;text-align:center;cursor:pointer;transition:.15s}
+#drop.over{background:var(--ok);border-style:solid}
+#drop b{display:block;font-size:14px;color:var(--green);margin-bottom:4px}
+#drop small{color:var(--muted)}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 10px;margin-top:8px}
+.card .name{font-weight:600;word-break:break-all}
+.msg{margin-top:4px;font-size:12px}
+.saved{border-left:4px solid #2E8B57}.review{border-left:4px solid var(--amber)}.skipped{border-left:4px solid #9AA8A2}
+.error{border-left:4px solid var(--red)}.working{border-left:4px solid var(--gold)}
+label{display:block;font-size:11px;color:var(--muted);margin-top:6px}
+input,select{width:100%;padding:5px 6px;border:1px solid var(--line);border-radius:6px;font:inherit;background:#FFFBEF}
+.row{display:flex;gap:6px}.row>div{flex:1}
+button{background:var(--green);color:#fff;border:0;border-radius:6px;padding:7px 12px;font:inherit;font-weight:600;cursor:pointer;margin-top:8px}
+button.light{background:#fff;color:var(--green);border:1px solid var(--green)}
+button:disabled{opacity:.5}
+details{margin-top:14px}
+summary{cursor:pointer;color:var(--muted)}
+.flags label{display:inline-flex;align-items:center;gap:4px;margin-right:8px;color:var(--ink)}
+.flags input{width:auto}
+#summary{margin-top:10px;font-size:12px;color:var(--muted)}
+.spin{display:inline-block;width:10px;height:10px;border:2px solid var(--gold);border-right-color:transparent;border-radius:50%;animation:s 1s linear infinite;margin-right:5px}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header><b>Certificate Reader</b><span id="org"></span></header>
+<main>
+  <div id="setup" class="card" hidden>
+    <b>First time on this computer</b>
+    <div class="msg">Paste the office Claude API key once. It is kept on this computer only.</div>
+    <input id="key" type="password" placeholder="sk-ant-…" autocomplete="off">
+    <button id="saveKey">Save key</button>
+  </div>
+  <div id="drop" tabindex="0">
+    <b>Drop certificates here</b>
+    <small>PDFs or photos — several at once, or a whole folder.<br>Or click to choose files.</small>
+    <input id="pick" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.webp" hidden>
+  </div>
+  <div id="summary"></div>
+  <div id="list"></div>
+  <details>
+    <summary>Settings</summary>
+    <button class="light" id="changeKey">Change API key</button>
+  </details>
+</main>
+<script src="taskpane.js"></script>
+</body>
+</html>
