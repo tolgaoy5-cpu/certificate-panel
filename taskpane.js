@@ -1,10 +1,10 @@
 /* Certificate Reader — Excel task pane.
-   Reads dropped certificates with Claude, matches them to a property on the Properties sheet and writes rows to the
+   Reads dropped certificates with the OpenAI API, matches them to a property on the Properties sheet and writes rows to the
    Certificates sheet of the open tracker. Uncertain results are shown for a quick check before saving. */
 "use strict";
 
-const MODEL = "claude-opus-5-5";
-const API = "https://api.anthropic.com/v1/messages";
+const MODEL = "gpt-6.1-sol";
+const API = "https://api.openai.com/v1/responses";
 const FIRST = 5, UNIT_LAST = 504, CERT_LAST = 3004, TYPE_FIRST = 5, TYPE_LAST = 29;
 const AUTO_SCORE = 60, AUTO_MARGIN = 15, PARALLEL = 3;
 const PTYPES = ["Residential let", "HMO", "Block / common parts", "Commercial", "Mixed-use"];
@@ -101,7 +101,7 @@ function match(units, address, unit, postcode) {
   return { unit: scored[0][1], score: scored[0][0], second: scored[1] ? scored[1][0] : 0 };
 }
 
-/* ------------------------------------------------------------ Claude */
+/* ------------------------------------------------------------ OpenAI */
 const PROMPT = (types) => `You are reading documents from a UK letting and property management office. Find every property
 compliance certificate in the attached document (one PDF can hold several, e.g. a fire alarm and an emergency
 lighting certificate). For each one, fill in the fields exactly as the document states them.
@@ -149,39 +149,53 @@ function schema(types) {
   };
 }
 
-async function readWithClaude(file, types) {
+async function readCertificate(file, types) {
   let blob = file, name = file.name;
   if (/\.hei[cf]$/i.test(name)) {
     if (!window.heic2any) throw new Error("HEIC converter didn't load — check the internet connection.");
     blob = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
     name = name.replace(/\.hei[cf]$/i, ".jpg");
   }
-  if (blob.size > 30 * 1024 * 1024) throw new Error("File is over 30 MB — split it into smaller PDFs.");
-  const data = await toBase64(blob);
+  if (blob.size > 45 * 1024 * 1024) throw new Error("File is over 45 MB — split it into smaller PDFs.");
   const isPdf = /\.pdf$/i.test(name);
-  const media = isPdf ? "application/pdf" : blob.type || "image/jpeg";
-  const block = isPdf ? { type: "document", source: { type: "base64", media_type: media, data } }
-    : { type: "image", source: { type: "base64", media_type: media, data } };
+  const part = isPdf
+    ? { type: "input_file", filename: name, file_data: "data:application/pdf;base64," + (await toBase64(blob)), detail: "high" }
+    : { type: "input_image", image_url: await imageDataUrl(blob), detail: "high" };
   const res = await fetch(API, {
     method: "POST",
-    headers: {
-      "content-type": "application/json", "x-api-key": localStorage.getItem(KEY) || "", "anthropic-version": "2026-10-21",
-      "anthropic-beta": "server-side-fallback-2026-07-01", "anthropic-dangerous-direct-browser-access": "true",
-    },
+    headers: { "content-type": "application/json", authorization: "Bearer " + (localStorage.getItem(KEY) || "") },
     body: JSON.stringify({
-      model: MODEL, max_tokens: 16000, fallbacks: "default",
-      output_config: { effort: "medium", format: { type: "json_schema", schema: schema(types) } },
-      messages: [{ role: "user", content: [block, { type: "text", text: PROMPT(types) + `\nFile name (may help, may be meaningless): ${file.name}` }] }],
+      model: MODEL, max_output_tokens: 16000,
+      input: [{ role: "user", content: [part, { type: "input_text", text: PROMPT(types) + `\nFile name (may help, may be meaningless): ${file.name}` }] }],
+      text: { format: { type: "json_schema", name: "certificates", schema: schema(types), strict: true } },
     }),
   });
   const body = await res.json().catch(() => ({}));
   if (res.status === 401) throw new Error("The API key isn't valid — change it in Settings.");
-  if (res.status === 429) throw new Error("Too many at once — wait a minute and drop it again.");
-  if (!res.ok) throw new Error((body.error && body.error.message) || `Claude API error ${res.status}`);
-  if (body.stop_reason === "refusal") throw new Error("The document could not be read.");
-  if (body.stop_reason === "max_tokens") throw new Error("The document is too long to read in one go.");
-  const text = (body.content || []).find((b) => b.type === "text");
+  if (res.status === 429) throw new Error("Too many at once, or the account is out of credit — wait a minute and try again.");
+  if (!res.ok) throw new Error((body.error && body.error.message) || `OpenAI API error ${res.status}`);
+  if (body.status === "incomplete") throw new Error("The document could not be read in full.");
+  const parts = (body.output || []).flatMap((o) => o.content || []);
+  if (parts.some((p) => p.type === "refusal")) throw new Error("The document could not be read.");
+  const text = parts.find((p) => p.type === "output_text");
   return JSON.parse(text ? text.text : "{}");
+}
+
+/* photos: shrink to at most 2400px so requests stay small */
+function imageDataUrl(blob) {
+  return new Promise((ok, fail) => {
+    const img = new Image(), url = URL.createObjectURL(blob);
+    img.onload = () => {
+      const k = Math.min(1, 2400 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      ok(c.toDataURL("image/jpeg", 0.88));
+    };
+    img.onerror = () => fail(new Error("This photo couldn't be opened."));
+    img.src = url;
+  });
 }
 
 function toBase64(blob) {
@@ -221,7 +235,7 @@ async function handle(file) {
   if (!READABLE.test(file.name)) return finish(card, "skipped", "Not a PDF or photo — skipped.");
   try {
     const { units, types, existing } = await loadLists();
-    const data = await readWithClaude(file, types);
+    const data = await readCertificate(file, types);
     const items = (data.certificates || []).filter((c) => c.type !== "Other" || c.issue_date);
     if (!data.is_certificate || !items.length) return finish(card, "skipped", "Not a certificate (form, plan, letter or photo) — skipped.");
     card.remove();
