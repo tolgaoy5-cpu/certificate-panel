@@ -11,10 +11,9 @@ const PTYPES = ["Residential let", "HMO", "Block / common parts", "Commercial", 
 const FLAGS = [["gas", "Gas"], ["lift", "Lift"], ["aircon", "Air con >12kW"], ["over11m", "Over 11m"], ["pre2000", "Built pre-2000"], ["licence", "Council licence"]];
 const READABLE = /\.(pdf|jpe?g|png|webp|gif|heic|heif)$/i;
 const KEY = "gc-cert-reader-key";
-const ARCHIVE = "https://127.0.0.1:8765";  // Certificate Inbox service on this Mac: keeps a copy of every certificate
 
 const $ = (id) => document.getElementById(id);
-let busy = 0, queue = [], stats = { saved: 0, review: 0, skipped: 0, error: 0 }, archiveOn = false;
+let busy = 0, queue = [], stats = { saved: 0, review: 0, skipped: 0, error: 0 };
 
 /* ------------------------------------------------------------ workbook */
 async function loadLists() {
@@ -44,7 +43,6 @@ async function writeCert(row) {
     const n = FIRST + i;
     ws.getRange(`B${n}:M${n}`).values = [[row.property, row.type, serial(row.issue), serial(row.expiry), row.result || "", "", "",
       row.company || "", row.number || "", row.file || "", row.notes || "", "Reader"]];
-    if (row.link) ws.getRange(`K${n}`).hyperlink = { address: row.link, textToDisplay: row.file };
     await ctx.sync();
     return n;
   });
@@ -279,7 +277,7 @@ async function handle(file) {
       if (!c.issue_date) reasons.push("issue date");
       if (!m.unit || m.score < AUTO_SCORE || m.score - m.second < AUTO_MARGIN) reasons.push("which property");
       if (c.confidence === "low") reasons.push("hard to read");
-      const item = { ...c, file: file.name, blob: file, inferred, suggested: m.unit && m.score > 20 ? m.unit.name : "" };
+      const item = { ...c, file: file.name, inferred, suggested: m.unit && m.score > 20 ? m.unit.name : "" };
       if (!reasons.length && existing.has(`${m.unit.name}|${c.type}|${serial(c.issue_date)}`)) {
         finish(sub, "skipped", `Already in the tracker: ${m.unit.name} · ${c.type} · ${ukDate(c.issue_date)}`);
       } else if (reasons.length) {
@@ -295,31 +293,10 @@ async function handle(file) {
   }
 }
 
-/* copy the original into Certificates/<Building>/<Unit>/ on this Mac, so old certificates are kept */
-async function archive(c, propertyName) {
-  const enc = encodeURIComponent;
-  const res = await fetch(`${ARCHIVE}/archive`, { method: "POST", body: c.blob, headers: { "Content-Type": "application/octet-stream",
-    "X-Filename": enc(c.file), "X-Property": enc(propertyName), "X-Type": enc(c.type), "X-Issue": enc(c.issue_date || "") } });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || `HTTP ${res.status}`);
-  return res.json();
-}
-
-async function checkArchive() {
-  try { archiveOn = (await fetch(`${ARCHIVE}/ping`)).ok; } catch (e) { archiveOn = false; }
-  showSummary();
-}
-
 async function save(c, propertyName) {
-  let file = c.file, link = "", warn = "";
-  try {
-    const a = await archive(c, propertyName);
-    file = a.name; link = a.file; archiveOn = true;
-  } catch (e) {
-    archiveOn = false; warn = "PDF not archived (archive service off)";
-  }
-  const notes = [warn, c.inferred, c.engineer && `Engineer: ${c.engineer}`, c.remedial_work && `Remedial: ${c.remedial_work}`].filter(Boolean).join("; ");
+  const notes = [c.inferred, c.engineer && `Engineer: ${c.engineer}`, c.remedial_work && `Remedial: ${c.remedial_work}`].filter(Boolean).join("; ");
   return writeCert({ property: propertyName, type: c.type, issue: c.issue_date, expiry: c.expiry_or_next_due, result: c.result,
-    company: c.company, number: c.certificate_number, file, link, notes });
+    company: c.company, number: c.certificate_number, file: c.file, notes });
 }
 
 /* ------------------------------------------------------------ UI */
@@ -342,8 +319,7 @@ function finish(card, status, msg) {
 function showSummary() {
   const waiting = busy + queue.length;
   $("summary").textContent = (waiting ? `Reading ${waiting}… ` : "") +
-    `Saved ${stats.saved} · To check ${stats.review} · Skipped ${stats.skipped} · Errors ${stats.error}` +
-    (archiveOn ? " · Archive on" : " · ⚠ Archive off: PDFs are not being copied");
+    `Saved ${stats.saved} · To check ${stats.review} · Skipped ${stats.skipped} · Errors ${stats.error}`;
 }
 
 function reviewForm(card, c, units, types, why) {
@@ -434,7 +410,6 @@ async function showOrg() {  // company name comes from the open workbook (Setup!
 Office.onReady(() => {
   needKey();
   showOrg();
-  checkArchive();
   $("saveKey").onclick = () => { const k = $("key").value.trim(); if (k) localStorage.setItem(KEY, k); $("key").value = ""; needKey(); };
   $("changeKey").onclick = () => { localStorage.removeItem(KEY); needKey(); };
   const drop = $("drop");
